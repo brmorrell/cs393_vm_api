@@ -6,7 +6,7 @@ use crate::data_source::DataSource;
 type VirtualAddress = usize;
 
 struct MapEntry {
-    source: Arc<dyn DataSource>,
+    source: Arc<dyn DataSource>, //TODO: make methods not require Arcs
     offset: usize,
     span: usize,
     addr: usize,
@@ -42,39 +42,69 @@ impl AddressSpace {
     ///
     /// # Errors
     /// If the desired mapping is invalid.
-    pub fn add_mapping<D: DataSource>(
-        &self,
-        source: &D,
+    pub fn add_mapping<D: 'static+DataSource>(
+        &mut self,
+        source: Arc<D>,
         offset: usize,
         span: usize,
     ) -> Result<VirtualAddress, &str> {
-        todo!()
+		let spot = self.mappings.iter().fold(0, |spot, x| if x.addr > spot+span {spot} else {x.addr+x.span});
+		self.add_mapping_at(source,offset,span,spot).map(|()| spot)
     }
 
     /// Add a mapping from `DataSource` into this `AddressSpace` starting at a specific address.
     ///
     /// # Errors
     /// If there is insufficient room subsequent to `start`.
-    pub fn add_mapping_at<D: DataSource>(
-        &self,
-        source: &D,
+    pub fn add_mapping_at<D: 'static+DataSource>(
+        &mut self,
+        source: Arc<D>,
         offset: usize,
         span: usize,
         start: VirtualAddress,
     ) -> Result<(), &str> {
-        todo!()
+        let next_map = self.mappings.iter().enumerate().find(|&x| x.1.addr + x.1.span >= start);
+        if next_map.is_none(){
+			if usize::MAX - span <= start {
+				Err("no space for that map")
+			}
+			else{
+				self.mappings.push_back(MapEntry {source: source.clone(),offset,span,addr:start,});//TODO: construct Arc properly
+				Ok(())
+			}
+		}
+		else{
+			if next_map.unwrap().1.addr <= start+span {
+				Err("no space for that map")
+			}
+			else{
+				let mut back_half = self.mappings.split_off(next_map.unwrap().0);
+				back_half.push_front(MapEntry {source: source.clone(),offset,span,addr:start,});
+				self.mappings.append(&mut back_half);//TODO: fix warnings - possibly don't use linked lists?
+				Ok(())
+			}
+		}
     }
 
     /// Remove the mapping to `DataSource` that starts at the given address.
     ///
     /// # Errors
     /// If the mapping could not be removed.
-    pub fn remove_mapping<D: DataSource>(
-        &self,
-        source: &D,
+    pub fn remove_mapping<D: DataSource + ?Sized>(//TODO: remove arc properly
+        &mut self,
+        source: Arc<D>,
         start: VirtualAddress,
-    ) -> Result<(), &str> {
-        todo!()
+    ) -> Result<(), &str> {//TODO: check source
+        let to_delete = self.mappings.iter().enumerate().find(|&(_,x)| x.addr == start).ok_or("that map doesn't exist");
+        if to_delete.is_err() {
+			return to_delete.map(|_| ());
+		}
+		else{
+        	let mut back_half = self.mappings.split_off(to_delete.unwrap().0);
+			back_half.pop_front();
+			self.mappings.append(&mut back_half);
+       		Ok(())
+       	}
     }
 
     /// Look up the DataSource and offset within that DataSource for a
@@ -83,12 +113,21 @@ impl AddressSpace {
     /// # Errors
     /// If this VirtualAddress does not have a valid mapping in &self,
     /// or if this AccessType is not permitted by the mapping
-    pub fn get_source_for_addr<D: DataSource>(
+    pub fn get_source_for_addr(
         &self,
         addr: VirtualAddress,
         access_type: FlagBuilder
-    ) -> Result<(&D, usize), &str> {
-        todo!();
+    ) -> Result<(Arc<dyn DataSource>, usize), &str> {
+		if access_type.read {
+			return Err("wrong permissions");
+		}
+        let map = self.mappings.iter().find(|&x| x.addr <= addr && addr <= x.addr + x.span);
+        if map.is_none() {
+			Err("that address isn't mapped")
+		}
+		else{
+			Ok((map.unwrap().source.clone(),map.unwrap().offset))
+		}
     }
 }
 
